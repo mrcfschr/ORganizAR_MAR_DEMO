@@ -1,4 +1,6 @@
-https://drive.google.com/file/d/1r6SIctwuGKC-gd8VoR1MDTKEfMJ5m_vF/view?usp=sharing
+[demo video](https://drive.google.com/file/d/12NZxuHpH7zQMvZE9VeS4lvuxN53DtEPO/view?usp=sharing)
+
+[Pipeline Overview.pdf](https://github.com/user-attachments/files/16319885/Copy.of.ORganizAR.Demo_presentation.pdf)
 
 # HoloLens 2 Sensor Streaming
 
