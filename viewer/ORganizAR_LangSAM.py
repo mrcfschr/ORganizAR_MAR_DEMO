@@ -30,7 +30,7 @@ from utils import project_2d_to_3d_single_frame, aggregate, filter
 from path_planning.path_planning import get_floor_grid, rotation_matrix_from_vectors
 from path_planning.path_planning import get_z_norm_of_plane, get_floor_mean
 from path_planning.path_planning import astar, get_object_grid_coordinates
-from path_planning.path_planning import get_starting_point
+from path_planning.path_planning import get_starting_point,register_moved_target,get_diagonal_line
 
 # Settings --------------------------------------------------------------------
 log_file_path = "./log.txt"
@@ -183,6 +183,13 @@ if reconstruct_point_cloud:
         recon_vis.create_window()
         print("initialized visualizer")
 
+
+def target_point_conversion(target_pos,rot_matrix):
+    target_pos = np.dot(rot_matrix,target_pos)
+    target_pos_instance_grid_coords = coor_to_grid(target_pos[0], target_pos[1],target_pos[2])
+    end_point = get_starting_point(np.asarray([[target_pos_instance_grid_coords[0],target_pos_instance_grid_coords[1]]]), grid)
+    return end_point
+                        
 def apply_clip_embedding_prompt(prompt):
     text = clip.tokenize([prompt]).to(device_search)
     return text
@@ -197,6 +204,29 @@ def set_up_data_struct(prompts):
             'frames': {}  # This will store information per frame, to be populated later
         }
     return data
+def display_path(points: np.ndarray, prompt_index: int) -> np.ndarray:
+    display_list = hl2ss_rus.command_buffer()
+    display_list.begin_display_list() # Begin sequence
+    # Check if subsampling is needed
+    max_chunk_size = 65535
+    if len(points) >= max_chunk_size:
+        points = points[np.random.choice(len(points), 65535, replace=False)]
+    
+    # Add quad to Unity scene
+    display_list = hl2ss_rus.command_buffer()
+    display_list.begin_display_list() # Begin sequence
+    display_list.create_line_renderer(prompt_index) 
+    # we use last, key not need, instead communicate which target it is with prompt_index, and the pc len
+    display_list.set_target_mode(hl2ss_rus.TargetMode.UseLast) # Set server to use the last created object as target (this avoids waiting for the id) 
+    display_list.set_world_transform(0, [0, 0, 0], [0, 0, 0, 1], [1,1, 1]) # Set the quad's world transform 
+    display_list.send_path_points(len(points), points) # Set the quad's texture
+    display_list.set_active(0, 1) # Make the quad visible
+    display_list.set_target_mode(hl2ss_rus.TargetMode.UseID) # Restore target mode
+    display_list.end_display_list() # End sequence
+    ipc.push(display_list) # Send commands to server
+    results = ipc.pull(display_list) # Get results from server
+    print(results)
+    return results
 
 def display_point_cloud(points: np.ndarray, prompt_index: int, detections: int) -> np.ndarray:
     """
@@ -208,7 +238,7 @@ def display_point_cloud(points: np.ndarray, prompt_index: int, detections: int) 
     Returns:
     - Array containing the results from the server after pushing commands.
     """
-    points[:, 2] = -points[:, 2] #unity coordinate system
+    
     display_list = hl2ss_rus.command_buffer()
     display_list.begin_display_list() # Begin sequence
     # Check if subsampling is needed
@@ -221,7 +251,7 @@ def display_point_cloud(points: np.ndarray, prompt_index: int, detections: int) 
     # Add quad to Unity scene
     display_list = hl2ss_rus.command_buffer()
     display_list.begin_display_list() # Begin sequence
-    display_list.create_point_cloud_renderer(detections) 
+    display_list.create_point_cloud_renderer(detections,prompt_index) 
     # we use last, key not need, instead communicate which target it is with prompt_index, and the pc len
     display_list.set_target_mode(hl2ss_rus.TargetMode.UseLast) # Set server to use the last created object as target (this avoids waiting for the id) 
     display_list.set_world_transform(0, [0, 0, 0], [0, 0, 0, 1], [1,1, 1]) # Set the quad's world transform 
@@ -233,6 +263,7 @@ def display_point_cloud(points: np.ndarray, prompt_index: int, detections: int) 
     results = ipc.pull(display_list) # Get results from server
     print(results)
     return results
+
 
 
 
@@ -248,7 +279,7 @@ def display_centroid(points: np.ndarray, prompt_index: int) -> np.ndarray:
     point = [x_median, y_median, z_median]
     print(f"median{point}")
     point[2] = -point[2] #unity is lefthanded
-    display_list.create_arrow() #TODO store key for later manipulation
+    display_list.create_arrow(prompt_index)
     display_list.set_target_mode(hl2ss_rus.TargetMode.UseLast) 
     display_list.set_world_transform(prompt_index, point, [0, 0, 0, 1], arrow_scale) # Set the quad's world transform
     display_list.set_active(prompt_index, 1) # Make the quad visible
@@ -306,6 +337,22 @@ def get_target_pos(prompt_index):
         res = ipc.pull(display_list)[1] # Get results from server
         res = uint_to_float(res)
         print("get_target_pos: ",res)
+        pos.append(res)
+    print("pos", pos)
+    return pos
+
+def get_corner_pos(prompt_index, corner_index):
+    pos = []
+    for axis in range(3):
+        print("axis:" ,axis)
+        display_list = hl2ss_rus.command_buffer()
+        display_list.begin_display_list() 
+        display_list.get_target_corner_pos(prompt_index,corner_index, axis)
+        display_list.end_display_list() # End sequence
+        ipc.push(display_list) # Send commands to server
+        res = ipc.pull(display_list)[1] # Get results from server
+        res = uint_to_float(res)
+        print("get_corner_pos: ",res)
         pos.append(res)
     print("pos", pos)
     return pos
@@ -621,7 +668,7 @@ if __name__ == '__main__':
                     """ 3. Filtering 3d masks"""
                     # start filtering
                     filtered_3d_masks = filter(aggregated_3d_masks, mask_indeces_to_be_merged, backprojected_3d_masks, if_occurance_threshold=True,occurance_thres= 0.2, small_mask_thres=200, filtered_mask_thres=0.1)
-                    detections = filtered_3d_masks["ins"].shape[0]
+                    #detections = filtered_3d_masks["ins"].shape[0]
                     """
                     filtered_3d_masks = {
                         "ins": torch.Tensor,  # (Ins, N)
@@ -630,28 +677,28 @@ if __name__ == '__main__':
                     }
                     """
                     
-                    # """ 4. Choosing the best mask for each clasw"""
-                    # print("DEBUG" , filtered_3d_masks["ins"].shape, filtered_3d_masks["final_class"])
-                    # # choose the best mask for each class based on the number of points
-                    # num_ins_points_after_filtering = filtered_3d_masks["ins"].sum(dim=1) # (Ins,)
-                    # # print(num_ins_points_after_filtering)
-                    # final_masks_indices = []  
-                    # final_classes = [] # list of torch.Tensor 
-                    # for class_index in range(len(prompts_lookup)):
-                    #     print(class_index)
-                    #     # get the indices of the masks that belong to the class
-                    #     mask_indices = torch.where(torch.tensor(filtered_3d_masks["final_class"]).squeeze() == class_index)[0]
-                    #     print(mask_indices)
-                    #     if len(mask_indices) > 0:
-                    #         max_index = torch.argmax(num_ins_points_after_filtering[mask_indices])
-                    #         final_masks_indices.append(mask_indices[max_index]) # Note: this is indicie
-                    #         final_classes.append(class_index)
+                    """ 4. Choosing the best mask for each clasw"""
+                    print("DEBUG" , filtered_3d_masks["ins"].shape, filtered_3d_masks["final_class"])
+                    # choose the best mask for each class based on the number of points
+                    num_ins_points_after_filtering = filtered_3d_masks["ins"].sum(dim=1) # (Ins,)
+                    # print(num_ins_points_after_filtering)
+                    final_masks_indices = []  
+                    final_classes = [] # list of torch.Tensor 
+                    for class_index in range(len(prompts_lookup)):
+                        print(class_index)
+                        # get the indices of the masks that belong to the class
+                        mask_indices = torch.where(torch.tensor(filtered_3d_masks["final_class"]).squeeze() == class_index)[0]
+                        print(mask_indices)
+                        if len(mask_indices) > 0:
+                            max_index = torch.argmax(num_ins_points_after_filtering[mask_indices])
+                            final_masks_indices.append(mask_indices[max_index]) # Note: this is indicie
+                            final_classes.append(torch.tensor(class_index))
 
-                    # # print(filtered_3d_masks["ins"], final_masks_indices)
-                    # filtered_3d_masks["ins"] = torch.tensor(filtered_3d_masks["ins"][final_masks_indices,:])
-                    # filtered_3d_masks["conf"] = torch.zeros(len(final_masks_indices))
-                    # filtered_3d_masks["final_class"] = final_classes
-                    
+                    # print(filtered_3d_masks["ins"], final_masks_indices)
+                    filtered_3d_masks["ins"] = torch.tensor(filtered_3d_masks["ins"][final_masks_indices,:])
+                    filtered_3d_masks["conf"] = torch.zeros(len(final_masks_indices))
+                    filtered_3d_masks["final_class"] = final_classes
+                    detections = filtered_3d_masks["ins"].shape[0]
                         
                     
                     
@@ -691,7 +738,17 @@ if __name__ == '__main__':
                     path_plan_point_clouds = []
                     path_for_class = []
                     #get the starting point and end point of the path planning
-                    
+                    #################edited
+                    index_mask = []
+                    for i in range(max(seg_masks["final_class"])+1):
+                        if i in seg_masks["final_class"]:
+                            index_mask.append(seg_masks["final_class"].index(i))
+                    #change the order of the final class and the ins
+                    seg_masks["ins"] = [seg_masks["ins"][i] for i in index_mask ]
+                    seg_masks["final_class"] = [seg_masks["final_class"][i] for i in index_mask ]
+                    ###################edited
+
+
                     for instance_index, instance in enumerate(seg_masks["ins"]):
                         
                         instance = instance.cpu()
@@ -705,50 +762,42 @@ if __name__ == '__main__':
                         print("start_point", start_point)
                         #get the end point in the grid
                         grid_center = np.array([grid.shape[0]//2, grid.shape[1]//2])
-                       
-                        target_pos = get_target_pos(seg_masks["final_class"][instance_index])
                         #rotate the target position to fit the path_planning coordinates
-                        target_pos = np.dot(rot_matrix,target_pos)
-
-                        print("target_pos", target_pos)
-                        
-                        target_pos_instance_grid_coords = coor_to_grid(target_pos[0], target_pos[1],target_pos[2])
-                        end_point = get_starting_point(np.asarray([[target_pos_instance_grid_coords[0],target_pos_instance_grid_coords[1]]]), grid)
-                        
-
-                        # ##dynamic path planning
-                        # mock_bb0 = grid_to_coor(end_point[0]+5, end_point[1]+5)#this returns a (x,y,z) coordinate
-                        # mock_bb1 = grid_to_coor(end_point[0]+5, end_point[1]-5)
-                        # mock_bb2 = grid_to_coor(end_point[0]-5, end_point[1]+5)
-                        # mock_bb3 = grid_to_coor(end_point[0]-5, end_point[1]-5)
-                        # mock_bounding_box = np.array([mock_bb0, mock_bb1, mock_bb2, mock_bb3, mock_bb0])#also works with 8 coordinates
-                        # original_loc = np.array([instance_grid_coords[:,0].mean(), instance_grid_coords[:,1].mean()])
-                        # grid = register_moved_target(bb3d=mock_bounding_box, floor_plan=grid, coord_to_grid=coor_to_grid, original_position=original_loc)
-                        
-                        ##
-
-
+                        target_pos = get_target_pos(seg_masks["final_class"][instance_index])
+                        end_point = target_point_conversion(target_pos,rot_matrix)
                         print("end_point", end_point)
+
+                        corner1 = target_point_conversion(get_corner_pos(seg_masks["final_class"][instance_index],0),rot_matrix)
+                        corner2 = target_point_conversion(get_corner_pos(seg_masks["final_class"][instance_index],1),rot_matrix)
+                        corner3 = target_point_conversion(get_corner_pos(seg_masks["final_class"][instance_index],2),rot_matrix)
+                        corner4 = target_point_conversion(get_corner_pos(seg_masks["final_class"][instance_index],3),rot_matrix) #todo slow code 
+                        print("corners: ", corner1,corner2,corner3,corner4)
+
+
+                        
                         #end_point = get_starting_point(np.asarray([grid_center]), grid)
                         #get the path plan
                         path_plan = astar(grid, start_point, end_point)
 
-                        # interpolate_num = 10
-                        # path_plan_reserve = [path_plan[0], path_plan[-1]]
-                        # path_plan=path_plan_reserve
-
+                        if len(path_plan) == 2:
+                            print("using diagonal")
+                            path_plan = get_diagonal_line(start_point,end_point)
+                        #get the bounding box of the object
+                        # mock_bb0 = grid_to_coor(end_point[0]+8, end_point[1]+8)
+                        # mock_bb1 = grid_to_coor(end_point[0]+8, end_point[1]-8)
+                        # mock_bb2 = grid_to_coor(end_point[0]-8, end_point[1]+8)
+                        # mock_bb3 = grid_to_coor(end_point[0]-8, end_point[1]-8)
+                        mock_bb0 = grid_to_coor(corner1[0], corner1[1])
+                        mock_bb1 = grid_to_coor(corner2[0], corner2[1])
+                        mock_bb2 = grid_to_coor(corner3[0], corner3[1])
+                        mock_bb3 = grid_to_coor(corner4[0], corner4[1])
                         
-                        # if len(path_plan) == 2:
-                        #     path_plan = []
-                        #     x1 = path_plan[0][0]
-                        #     y1 = path_plan[0][1]
-                        #     x2 = path_plan[1][0]
-                        #     y2 = path_plan[1][1]
-                        #     # step_size_x = (max(x1,x2) - min(x2,x1))/interpolate_num
-                        #     # step_size_y = (max(y1,y2) - min(y2,y1))/interpolate_num
-                        #     for i_x in np.arange(x1,x2,step=1 if x1<x2 else -1):
-                        #         for i_y in np.arange(y1, y2, step=1 if y1<y2 else -1):
-                        #             path_plan.append((int(i_x),int(i_y)))
+                        bounding_box = np.array([mock_bb0, mock_bb1, mock_bb2, mock_bb3, mock_bb0])
+
+
+                        original_loc = np.array([instance_grid_coords[:,0].mean(), instance_grid_coords[:,1].mean()])
+                        grid = register_moved_target(bb3d=bounding_box, floor_plan=grid, coord_to_grid=coor_to_grid, original_position=original_loc)
+                        ######################edited
 
 
 
@@ -770,7 +819,10 @@ if __name__ == '__main__':
                     #     path = 
                     path_plan_point_clouds.append(pcd) #whole scene
                     o3d.visualization.draw_geometries(path_plan_point_clouds)
-                    
+                    first_carm = False
+                    first_shelf = False
+                    first_us =False
+                    bools = [first_carm,first_shelf,first_us]
                     for points_filtered_mask, class_filtered in zip(filtered_3d_masks["ins"], filtered_3d_masks["final_class"]): # points_filtered_mask shape (N)
                         points_filtered = pcd_3d[points_filtered_mask.cpu().numpy()]
                         
@@ -786,9 +838,17 @@ if __name__ == '__main__':
                             for path_pcd, class_index in zip(path_plan_point_clouds, path_for_class):
                                 if class_index == int(class_filtered.cpu().numpy()):
                                     print("sent pc target and path to HL2: ", prompts_lookup[class_filtered.cpu().numpy()])
+                                    
                                     points2 = np.asarray(path_pcd.points, dtype=np.float32)
+                                    print("pathshape:", points2.shape)
+                                    points[:, 2] = -points[:, 2] #unity coordinate system
+                                    points2[:, 2] = -points2[:, 2] #unity coordinate system
                                     combined_points = np.concatenate((points, points2), axis=0)
+                                    
+                                    result_path = display_path(points2,int(class_filtered.cpu().numpy()))
                                     results_pc = display_point_cloud(combined_points,int(class_filtered.cpu().numpy()),detections)
+                                    #path rendered from bed to carm but also between monitor and us, laparoscpic missing
+                                    #only one should be visible
       
                     
                             

@@ -15,6 +15,7 @@ public class HandMenuManager : MonoBehaviour
     private bool selectSetUpComplete = false;
     private bool aiComplete = false;
     public List<GameObject> handMenus = new List<GameObject>();
+    public RemoteUnitySceneCustom remoteUnitySceneCustom;
 
     private bool align1 = false;
     private bool align2 = false;
@@ -49,6 +50,7 @@ public class HandMenuManager : MonoBehaviour
         if (!align1)
         {
             align1 = true;
+            remoteUnitySceneCustom.SetPathGroupActive(1);
             currentHandMenu++;
             ToggleHandMenus(currentHandMenu);
         }
@@ -59,6 +61,7 @@ public class HandMenuManager : MonoBehaviour
         if (!align2)
         {
             align2 = true;
+            remoteUnitySceneCustom.SetPathGroupActive(2);
             currentHandMenu++;
             ToggleHandMenus(currentHandMenu);
         }
@@ -69,6 +72,7 @@ public class HandMenuManager : MonoBehaviour
         if (!align3)
         {
             align3 = true;
+            remoteUnitySceneCustom.SetPathGroupActive(3);
             currentHandMenu++;
             ToggleHandMenus(currentHandMenu);
         }
@@ -117,12 +121,28 @@ public class HandMenuManager : MonoBehaviour
 
     }
 
-    private void ToggleHandMenus(int index) {
+    private void ToggleHandMenus(int index)
+    {
+        // Store the transform of the currently active menu (if any)
+        Transform currentActiveTransform = null;
         foreach (var menu in handMenus)
         {
-            menu.SetActive(false);
+            if (menu.activeSelf)
+            {
+                currentActiveTransform = menu.transform;
+                menu.SetActive(false);
+            }
         }
+
+        // Activate the new menu
         handMenus[index].SetActive(true);
 
+        // If there was an active menu before, copy its transform properties
+        if (currentActiveTransform != null)
+        {
+            handMenus[index].transform.position = currentActiveTransform.position;
+            handMenus[index].transform.rotation = currentActiveTransform.rotation;
+            handMenus[index].transform.localScale = currentActiveTransform.localScale;
+        }
     }
 }

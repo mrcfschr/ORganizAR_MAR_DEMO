@@ -10,6 +10,7 @@ using UnityEngine.WSA;
 using UnityEngine.UIElements;
 using System.Net.NetworkInformation;
 using static UnityEngine.XR.Interaction.Toolkit.Inputs.Interactions.SectorInteraction;
+using static Microsoft.MixedReality.GraphicsTools.MeshInstancer;
 
 public class RemoteUnitySceneCustom : MonoBehaviour
 {
@@ -30,6 +31,10 @@ public class RemoteUnitySceneCustom : MonoBehaviour
     public GameObject SelectedSetup;
     public GameObject table1;
     public GameObject table2;
+    public List<GameObject> pathGroup1 = new List<GameObject>();
+    public List<GameObject> pathGroup2 = new List<GameObject>();
+    public List<GameObject> pathGroup3 = new List<GameObject>();
+
 
     private List<Color> colorList = new List<Color>
     {
@@ -63,8 +68,73 @@ public class RemoteUnitySceneCustom : MonoBehaviour
         {
             AIDone = false; //for debugging
             targetRenderingsParent.SetActive(true);
+            
             HandMenuManager.AIDone();
+            SetPathGroupActive(0);
         }
+    }
+
+    public void SetPathGroupActive(int index) {
+        switch (index)
+        {
+            case 0:
+                foreach (GameObject obj in pathGroup1)
+                {
+                    obj.SetActive(true);
+                }
+                foreach (GameObject obj in pathGroup2)
+                {
+                    obj.SetActive(false);
+                }
+                foreach (GameObject obj in pathGroup3)
+                {
+                    obj.SetActive(false);
+                }
+                break;
+            case 1:
+                foreach (GameObject obj in pathGroup1)
+                {
+                    obj.SetActive(false);
+                }
+                foreach (GameObject obj in pathGroup2)
+                {
+                    obj.SetActive(true);
+                }
+                foreach (GameObject obj in pathGroup3)
+                {
+                    obj.SetActive(false);
+                }
+                break;
+            case 2:
+                foreach (GameObject obj in pathGroup1)
+                {
+                    obj.SetActive(false);
+                }
+                foreach (GameObject obj in pathGroup2)
+                {
+                    obj.SetActive(false);
+                }
+                foreach (GameObject obj in pathGroup3)
+                {
+                    obj.SetActive(true);
+                }
+                break;
+            default:
+                foreach (GameObject obj in pathGroup1)
+                {
+                    obj.SetActive(false);
+                }
+                foreach (GameObject obj in pathGroup2)
+                {
+                    obj.SetActive(false);
+                }
+                foreach (GameObject obj in pathGroup3)
+                {
+                    obj.SetActive(false);
+                }
+                break;
+        }
+
     }
     public void SetTargetsActive() {
 
@@ -102,18 +172,181 @@ public class RemoteUnitySceneCustom : MonoBehaviour
             case 18: ret = MSG_BeginDisplayList(data); break;
             case 19: ret = MSG_EndDisplayList(data); break;
             case 20: ret = MSG_SetTargetMode(data); break;
-            case 21: ret = MSG_SpawnArrow(); break;
+            case 21: ret = MSG_SpawnArrow(data); break;
             case 22: ret = MSG_ReceiveDetection(data); break;
             case 23: ret = MSG_CheckDone(); break;
             case 24: ret = MSG_CreatePCRenderer(data); break;
             case 25: ret = MSG_SetPointCloud(data); break;
             case 26: ret = GetTargetPosition(data); break;
             case 27: ret = ApplyTableScale(data); break;
+            case 28: ret = MSG_CreateLineRenderer(data); break;
+            case 29: ret = MSG_SetLine(data); break;
+            case 30: ret = GetCornerPosition(data); break;
             case ~0U: ret = MSG_Disconnect(data); break;
         }
 
         return ret;
     }
+    uint GetCornerPosition(byte[] data)
+    {
+        if (data.Length < 12) { return 0; }
+
+        int promptIndex = BitConverter.ToInt32(data, 0);
+        int cornerIndex = BitConverter.ToInt32(data, 4);
+        int axis = BitConverter.ToInt32(data, 8);
+
+        List<GameObject> childObjects = new List<GameObject>();
+        foreach (Transform child in SelectedSetup.GetComponentsInChildren<Transform>())
+        {
+            if (child.gameObject != SelectedSetup)
+            {
+                childObjects.Add(child.gameObject);
+            }
+        }
+        GameObject go = childObjects[promptIndex];
+        
+        Vector3 targetPos = go.GetComponent<GetBottomBounds>().GetBottomCorner(cornerIndex); 
+        uint result = 0;
+        switch (axis)
+        {
+            case 0:
+                result = FloatToUint(targetPos.x);
+                break;
+            case 1:
+                result = FloatToUint(targetPos.y);
+                break;
+            case 2:
+                result = FloatToUint(targetPos.z);
+                break;
+        }
+
+        return result;
+    }
+
+    uint MSG_CreateLineRenderer(byte[] data)
+    {
+        if (data.Length < 4) //detections and index
+        {
+            return 0;
+        }
+
+        int index = BitConverter.ToInt32(data, 0);
+
+
+        GameObject linePrefab = Resources.Load<GameObject>("pathViz");
+        GameObject lineInstance = GameObject.Instantiate(linePrefab, Vector3.zero, Quaternion.identity);
+
+        LineRenderer lineRenderer = lineInstance.GetComponent<LineRenderer>();
+        if (lineRenderer != null)
+        {
+            lineRenderer.enabled = true;
+        }
+
+        switch (index)
+        {
+            case 0:
+                pathGroup1.Add(lineInstance);
+                break;
+            case 1:
+                pathGroup2.Add(lineInstance);
+                break;
+            case 2:
+                pathGroup3.Add(lineInstance);
+                break;
+            default:
+                Debug.LogError("Invalid index value!");
+                return 0;
+        }
+
+        return AddGameObject(lineInstance);
+    }
+
+
+    uint MSG_SetLine(byte[] data)
+    {
+        if (data.Length < 4) { return 0; }
+       
+        GameObject go;
+        //mode last no key used
+        if (!m_remote_objects.TryGetValue(GetKey(data), out go)) { return 0; }
+
+        LineRenderer lineRenderer = go.GetComponent<LineRenderer>();
+        // first el is len
+        int nPoints = BitConverter.ToInt32(data, 0);
+        Vector3[] arrVertices = new Vector3[nPoints];
+
+
+        if (data.Length > 4)
+        {
+            byte[] pointsInBytes = new byte[data.Length - 4];
+            Array.Copy(data, 4, pointsInBytes, 0, pointsInBytes.Length); //probably not needed just use offset below
+
+
+            int floatSize = 4; // Size of a float in bytes
+            for (int i = 0; i < nPoints; ++i)
+            {
+                float x = BitConverter.ToSingle(pointsInBytes, i * 3 * floatSize);
+                float y = BitConverter.ToSingle(pointsInBytes, i * 3 * floatSize + floatSize);
+                float z = BitConverter.ToSingle(pointsInBytes, i * 3 * floatSize + 2 * floatSize);
+                arrVertices[i] = new Vector3(x, y, z);
+            }
+
+        }
+
+        List<Vector3> smoothPathPoints = GenerateSmoothPath(arrVertices, 10);
+
+
+        lineRenderer.positionCount = smoothPathPoints.Count;
+        lineRenderer.SetPositions(smoothPathPoints.ToArray());
+
+
+        lineRenderer.widthMultiplier = 0.05f;
+
+        lineRenderer.numCornerVertices = 10;
+        lineRenderer.numCapVertices = 10;
+
+        return 1;
+    }
+
+    List<Vector3> GenerateSmoothPath(Vector3[] controlPoints, int smoothness)
+    {
+        List<Vector3> pathPoints = new List<Vector3>();
+
+        for (int i = 0; i < controlPoints.Length - 1; i++)
+        {
+            Vector3 p0 = controlPoints[Mathf.Max(i - 1, 0)];
+            Vector3 p1 = controlPoints[i];
+            Vector3 p2 = controlPoints[Mathf.Min(i + 1, controlPoints.Length - 1)];
+            Vector3 p3 = controlPoints[Mathf.Min(i + 2, controlPoints.Length - 1)];
+
+            for (int j = 0; j < smoothness; j++)
+            {
+                float t = j / (float)smoothness;
+                Vector3 point = CatmullRom(p0, p1, p2, p3, t);
+                pathPoints.Add(point);
+            }
+        }
+
+        // Add the last control point
+        pathPoints.Add(controlPoints[controlPoints.Length - 1]);
+
+        return pathPoints;
+    }
+
+    Vector3 CatmullRom(Vector3 p0, Vector3 p1, Vector3 p2, Vector3 p3, float t)
+    {
+        // Catmull-Rom spline formula
+        return 0.5f * (
+            2f * p1 +
+            (-p0 + p2) * t +
+            (2f * p0 - 5f * p1 + 4f * p2 - p3) * t * t +
+            (-p0 + 3f * p1 - 3f * p2 + p3) * t * t * t
+        );
+    }
+
+
+
+
 
     public uint ApplyTableScale(byte[] data)
     {
@@ -185,29 +418,55 @@ public class RemoteUnitySceneCustom : MonoBehaviour
         return result;
     }
     private int detections = 0;
+    public void SetTargetRenderings(GameObject selected) {
+        SelectedSetup = selected;
+        GameObject cArm = SelectedSetup.transform.GetChild(0).gameObject; // C-Arm
+        pathGroup1 = new List<GameObject> { cArm };
+        GameObject laparoscopicTower4 = SelectedSetup.transform.GetChild(1).gameObject; // LaparoscopicTower4path
+        pathGroup2 = new List<GameObject> { laparoscopicTower4 };
+        GameObject usTower = SelectedSetup.transform.GetChild(2).gameObject; // USTower
+        pathGroup3 = new List<GameObject> { usTower };
 
+    }
     uint MSG_CreatePCRenderer(byte[] data)
     {
-        if (data.Length < 4)
+        if (data.Length < 8) //detections and index
         {
             return 0;
         }
         detections = BitConverter.ToInt32(data, 0);
-      
+        int index = BitConverter.ToInt32(data, 4);
+
         pc_counter += 1;
-        if (pc_counter == 4) {
+        if (pc_counter >=  4) {
             return 0;
             
         }
         GameObject pcPrefab = Resources.Load<GameObject>("PointCloudRenderer");
         GameObject pcInstance = GameObject.Instantiate(pcPrefab, Vector3.zero, Quaternion.identity);
 
-        // Set initial visibility of the arrow
         Renderer pcRenderer = pcInstance.GetComponent<Renderer>();
         if (pcRenderer != null)
         {
             pcRenderer.enabled = true;
         }
+
+        switch (index)
+        {
+            case 0:
+                pathGroup1.Add(pcInstance);
+                break;
+            case 1:
+                pathGroup2.Add(pcInstance);
+                break;
+            case 2:
+                pathGroup3.Add(pcInstance);
+                break;
+            default:
+                Debug.LogError("Invalid index value!");
+                return 0;
+        }
+
         return AddGameObject(pcInstance);
     }
 
@@ -216,7 +475,7 @@ public class RemoteUnitySceneCustom : MonoBehaviour
     {
         if (data.Length < 4) { return 0; }
         //not more than 3 objects
-        if (pc_counter == 4)
+        if (pc_counter >= 4)
         {
             return 1;
 
@@ -289,7 +548,7 @@ public class RemoteUnitySceneCustom : MonoBehaviour
         
     }
 
-    uint MSG_SpawnArrow()
+    uint MSG_SpawnArrow(byte[] data)
     {
         GameObject arrowPrefab = Resources.Load<GameObject>("3D RightArrow");
         GameObject arrowInstance = GameObject.Instantiate(arrowPrefab, Vector3.zero, Quaternion.identity);
@@ -301,9 +560,25 @@ public class RemoteUnitySceneCustom : MonoBehaviour
             arrowRenderer.enabled = true; 
         }
 
-   
-        // Align local x-axis of the arrow prefab with the world y-axis
-        arrowInstance.transform.rotation = Quaternion.FromToRotation(Vector3.right, Vector3.up);
+
+        if (data.Length < 4) { return 0; }
+        int index = BitConverter.ToInt32(data, 0);
+        switch (index)
+        {
+            case 0:
+                pathGroup1.Add(arrowInstance);
+                break;
+            case 1:
+                pathGroup2.Add(arrowInstance);
+                break;
+            case 2:
+                pathGroup3.Add(arrowInstance);
+                break;
+            default:
+                Debug.LogError("Invalid index value!");
+                return 0;
+        }
+
 
         return AddGameObject(arrowInstance);
     }

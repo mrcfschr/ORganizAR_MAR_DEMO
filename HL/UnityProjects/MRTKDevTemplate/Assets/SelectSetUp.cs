@@ -27,27 +27,30 @@ public class SelectSetUp : MonoBehaviour
 
     public void ActivateGameObject1()
     {
-        remoteUnitySceneCustom.SelectedSetup = gameObject1;
+        
         gameObject1.SetActive(true);
         gameObject2.SetActive(false);
         gameObject3.SetActive(false);
+        remoteUnitySceneCustom.SetTargetRenderings(gameObject1);
     }
 
 
     public void ActivateGameObject2()
     {
+       
         gameObject2.SetActive(true);
-        remoteUnitySceneCustom.SelectedSetup = gameObject2;
         gameObject1.SetActive(false);
         gameObject3.SetActive(false);
+        remoteUnitySceneCustom.SetTargetRenderings(gameObject2);
     }
 
     public void ActivateGameObject3()
     {
+        
         gameObject3.SetActive(true);
-        remoteUnitySceneCustom.SelectedSetup = gameObject3;
         gameObject1.SetActive(false);
         gameObject2.SetActive(false);
+        remoteUnitySceneCustom.SetTargetRenderings(gameObject3);
     }
 
     public void DoneSelectingSetUP()

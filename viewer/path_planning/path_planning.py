@@ -7,6 +7,7 @@ import torch
 import pdb
 import numpy as np
 import matplotlib.pyplot as plt
+from scipy.spatial import ConvexHull
 
 OBSTACLE_HEIGHT = 0.2
 def get_floor_grid(floor_points: np.ndarray,z_mean, grid_width_resolution:int = 100):
@@ -54,10 +55,7 @@ def get_floor_grid(floor_points: np.ndarray,z_mean, grid_width_resolution:int = 
     grid = np.zeros((width_res, height_res))
     for i in floor_points:
         x, y = coordinate_to_grid(i[0],i[1], i[2])
-        if 0 <= x < width_res and 0 <= y < height_res:  #    grid, bb, voxel_size, coor_to_grid, grid_to_coor = get_floor_grid(coords_for_pathplanning, z_mean, 100)
-                                                        #File "/mnt/c/Users/Marc/Desktop/CS/MARPROJECT/viewer/path_planning/path_planning.py", line 57, in get_floor_grid
-                                                        #grid[x,y]=1
-                                                        #IndexError: index 100 is out of bounds for axis 1 with size 100
+        if 0 <= x < grid.shape[0] and 0 <= y < grid.shape[1]: #edited
             grid[x,y]=1
 
 
@@ -218,12 +216,88 @@ def get_starting_point(grid_coords:np.ndarray, grid:np.ndarray)->(int,int):
 #   File "/mnt/c/Users/Marc/Desktop/dev/ORganizAR_MAR_DEMO/viewer/path_planning/path_planning.py", line 218, in get_starting_point
 #     if grid[i,j] == 0:
 # IndexError: index 130 is out of bounds for axis 0 with size 100
-            if grid[i,j] == 0:
-               d = np.linalg.norm(np.array([i,j])-np.array(coords_center))
-               if d < distance:
-                   distance = d
-                   res = (i,j)
+            if 0 <= i < grid.shape[0] and 0 <= j < grid.shape[1]: #edited
+                if grid[i,j] == 0:
+                    d = np.linalg.norm(np.array([i,j])-np.array(coords_center))
+                    if d < distance:
+                        distance = d
+                        res = (i,j)
     return res
+
+def is_in_hull(x:int, y:int, points:list, original_area: float)->bool:
+    """
+    Check if the point is in the convex hull
+    Args:
+        p: np.ndarray: the point
+        hull: ConvexHull: the convex hull
+
+    Returns:
+        bool: True if the point is in the convex hull formed by the points
+    """
+
+    #get the area of the convex hull with the point
+    points.append((x,y))
+    points_np = np.array(points)
+    hull_area_with_point = ConvexHull(points).area
+
+    res =not (hull_area_with_point > original_area)
+
+    points.pop()
+    #if the area of the convex hull with the point is greater than the original area, then the point is in the convex hull
+    return res
+
+def register_moved_target(bb3d: np.ndarray, floor_plan: np.ndarray, coord_to_grid: callable, original_position: np.ndarray)->np.ndarray:
+    """
+    Register the moved target in the floor plan and free up space in original position
+    Args:
+        bb: np.ndarray: the bounding box of the floor plan
+        floor_plan: np.ndarray: the floor plan
+        coord_to_grid: callable: the function that converts the 3d coordinates to grid coordinates
+        original_position: np.ndarray: the original position of the target (X,Y)
+
+    Returns:
+        np.ndarray: the updated floor plan
+    """
+    bb3d_grid = []
+    for i in bb3d:
+        x, y = coord_to_grid(i[0], i[1], i[2])
+        bb3d_grid.append((x, y))
+    bb3d_grid_np = np.array(bb3d_grid)
+    #get the area of the convex hull
+    max_x = bb3d_grid_np[:,0].max()
+    min_x = bb3d_grid_np[:,0].min()
+    max_y = bb3d_grid_np[:,1].max()
+    min_y = bb3d_grid_np[:,1].min()
+    x_range= np.arange(min_x, max_x)
+    y_range = np.arange(min_y, max_y)
+    hull_area = ConvexHull(bb3d_grid_np).area
+    print("original hull area: ", hull_area)
+    print(x_range)
+    print(y_range)
+    #iterate through the possible grid points and then check if the point is in the convex hull
+    for x in x_range:
+        for y in y_range:
+            if 0 <= x < floor_plan.shape[0] and 0 <= y < floor_plan.shape[1]: #edited
+                if floor_plan[x,y] == 0:
+
+                    #check if the point is in the convex hull
+                    if is_in_hull(x,y, bb3d_grid, hull_area):
+                        #if the point is in the convex hull, then the point is occupied
+
+                        floor_plan[x,y] = 1
+                    else:
+                        continue
+
+    radius = np.linalg.norm((max_x-min_x,max_y-min_y))/2
+    #free up space in the original position
+    for x in range(0,floor_plan.shape[0]):
+        for y in range(0,floor_plan.shape[1]):
+            if 0 <= x < floor_plan.shape[0] and 0 <= y < floor_plan.shape[1]: #edited
+                if np.linalg.norm(np.array([x,y])-np.array(original_position)) < radius and floor_plan[x,y] == 1:
+                    floor_plan[x,y] = 0
+
+    return floor_plan
+
 
 
 class ObjectManager:
@@ -246,6 +320,24 @@ class ObjectManager:
             return None
 
         #if there is an object with the id
+def get_diagonal_line(lowe_left:(int,int), upper_right:(int,int))->list[(int,int)]:
+    x1 = lowe_left[0]
+    y1 = lowe_left[1]
+    x2 = upper_right[0]
+    y2 = upper_right[1]
+    res = []
+    num_steps = max(abs(y2-y1),abs(x2-x1))
+    #pdb.set_trace()
+    step_size_x: float = (x2-x1)/num_steps
+    step_size_y: float = (y2-y1)/num_steps
+    current_step_x:float = float(x1)
+    current_step_y:float = float(y1)
+    for i in range(num_steps):
+        res.append((int(current_step_x),int(current_step_y)))
+        current_step_x+=step_size_x
+        current_step_y+=step_size_y
+    return res
+    
 
 
 
